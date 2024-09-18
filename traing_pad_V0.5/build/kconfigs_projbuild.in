@@ -1,0 +1,6 @@
+source "/Users/ai/esp/esp-idf/components/app_update/Kconfig.projbuild"
+source "/Users/ai/esp/esp-idf/components/bootloader/Kconfig.projbuild"
+source "/Users/ai/esp/esp-idf/components/esp_rom/Kconfig.projbuild"
+source "/Users/ai/esp/esp-idf/components/esptool_py/Kconfig.projbuild"
+source "/Users/ai/esp/esp-idf/components/partition_table/Kconfig.projbuild"
+source "/Users/ai/Documents/IWING/iwing101/traing_pad_V0.5/main/Kconfig.projbuild"
