@@ -12,6 +12,10 @@
 #include "driver/adc.h"
 #include "esp_adc_cal.h"
 #include "freertos/semphr.h"
+#include <stdlib.h>
+#include <sys/time.h>
+#include "esp_sleep.h"
+#include "driver/rtc_io.h"
 
 // #################### BLE ####################
 #include "freertos/FreeRTOS.h"
@@ -229,6 +233,7 @@ static uint8_t g_music_data[100] = {0};  // ข้อมูลเพลงใน
 static size_t g_music_data_len = 0;
 static uint8_t ble_is_connected = 1;
 void set_all_leds(uint8_t red, uint8_t green, uint8_t blue);
+void sleep_call();
 // #################### BLE ####################
 static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
 {
@@ -766,15 +771,21 @@ void set_all_leds(uint8_t red, uint8_t green, uint8_t blue)
 
 static void ble_disconnect_task(void *pvParameter)
 {
+    uint64_t last_connected_time=esp_timer_get_time() / 1000;
+    uint64_t current_time; 
     while(1){
         if(ble_is_connected == 1){
             set_all_leds(255, 0, 0);
             vTaskDelay(500 / portTICK_PERIOD_MS);
             set_all_leds(0, 0, 0);
             vTaskDelay(500 / portTICK_PERIOD_MS);
+            current_time = esp_timer_get_time() / 1000;
+            if(current_time - last_connected_time > 10000){
+                sleep_call();
+            }
         }else{
             vTaskDelay(1000 / portTICK_PERIOD_MS);
-            //esp_ble_gap_start_advertising(&adv_params);
+            last_connected_time = esp_timer_get_time() / 1000;
         }
     }
 }
@@ -951,6 +962,13 @@ void adc_init(){
     esp_adc_cal_value_t val_type = esp_adc_cal_characterize(unit, atten, width, DEFAULT_VREF, adc_chars);
     print_char_val_type(val_type);
 }
+
+void sleep_call(){
+    ESP_ERROR_CHECK(esp_sleep_enable_ext0_wakeup(BUTTON_PIN, 0));
+    ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(BUTTON_PIN));
+    ESP_ERROR_CHECK(rtc_gpio_pullup_en(BUTTON_PIN));
+    esp_deep_sleep_start();
+}
 void app_main(void)
 {
     //##################### BLE #####################
@@ -1014,6 +1032,16 @@ void app_main(void)
         ESP_LOGE(GATTS_TABLE_TAG, "set local  MTU failed, error code = %x", local_mtu_ret);
     }
     //##################### END BLE #################
+    switch (esp_sleep_get_wakeup_cause()) {
+        case ESP_SLEEP_WAKEUP_EXT0: {
+            printf("Wake up from EXT0\n");
+            rtc_gpio_deinit(BUTTON_PIN);
+            break;
+        }
+        case ESP_SLEEP_WAKEUP_UNDEFINED:
+        default:
+            printf("Not a deep sleep reset\n");
+    }
     rgb_led_init();
     ledc_init();
     gpio_init();
