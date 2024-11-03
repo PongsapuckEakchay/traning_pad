@@ -234,6 +234,9 @@ static size_t g_music_data_len = 0;
 static uint8_t ble_is_connected = 1;
 static uint8_t g_mode = 0;  // สถานะของโหมดการทำงาน
 
+static esp_gatt_if_t gatt_if = ESP_GATT_IF_NONE;
+static uint16_t conn_id = 0;
+
 void set_all_leds(uint8_t red, uint8_t green, uint8_t blue);
 void sleep_call();
 // #################### BLE ####################
@@ -494,6 +497,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     
     switch (event) {
         case ESP_GATTS_REG_EVT:{
+            gatt_if = gatts_if;
             esp_err_t set_dev_name_ret = esp_ble_gap_set_device_name(SAMPLE_DEVICE_NAME);
             if (set_dev_name_ret){
                 ESP_LOGE(GATTS_TABLE_TAG, "set device name failed, error code = %x", set_dev_name_ret);
@@ -566,6 +570,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             break;
         case ESP_GATTS_CONNECT_EVT:
             ble_is_connected = 0;
+            conn_id = param->connect.conn_id;
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_CONNECT_EVT, conn_id = %d", param->connect.conn_id);
             esp_log_buffer_hex(GATTS_TABLE_TAG, param->connect.remote_bda, 6);
             esp_ble_conn_update_params_t conn_params = {0};
@@ -646,6 +651,10 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             }
         }
     } while (0);
+}
+
+static void ble_send_notify(uint16_t handle, uint8_t *value, size_t len) {
+    esp_ble_gatts_send_indicate(gatt_if, conn_id, handle, len, value, false);
 }
 
 // #################### END BLE ####################
