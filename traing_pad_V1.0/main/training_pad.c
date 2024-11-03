@@ -16,6 +16,7 @@
 #include <sys/time.h>
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
+#include "esp_timer.h"
 
 // #################### BLE ####################
 #include "freertos/FreeRTOS.h"
@@ -183,13 +184,15 @@ static const uint8_t char_value[4]                 = {0x11, 0x22, 0x33, 0x44};
 #define IR_LED_PIN         16  // GPIO pin for IR LED
 #define IR_RECEIVER_PIN    17  // GPIO pin for IR receiver
 #define BUTTON_PIN         15   // GPIO pin for button
-#define VIBRATION_PIN      21   // GPIO pin for vibration sensor
+#define VIBRATION_PIN      22   // GPIO pin for vibration sensor actual gpio 21
 #define GPIO_INPUT_BUTTON_PIN_SEL  1ULL<<BUTTON_PIN
 #define GPIO_INPUT_IR_PIN_SEL 1ULL<<IR_RECEIVER_PIN
 #define GPIO_INPUT_VIBRATION_PIN_SEL 1ULL<<VIBRATION_PIN
 #define ESP_INTR_FLAG_DEFAULT 0
 #define DEBOUNCE_TIME_MS   20 // 200 ms debounce time
+#define VIBRATION_TIMEOUT 1000 // 1ms vibration timeout time
 #define SAMPLES 100
+#define NO_OF_VIBRATION_SAMPLES 100
 static int vibration_threshold = 40;
 
 #define IR_PWM_TMER              LEDC_TIMER_0
@@ -225,12 +228,16 @@ TaskHandle_t Vibration_Handle = NULL;
 static SemaphoreHandle_t g_ble_data_mutex = NULL;
 
 static uint64_t last_button_time = 0;
+static uint64_t last_vibration_time = 0;
 static int samples[SAMPLES+20];
 static uint8_t g_vib_threshold = 40;  // ค่าเริ่มต้นสำหรับ vibration threshold
 static uint8_t g_led_color[3] = {0, 0, 0};  // RGB color for LED
 static uint8_t g_ir_tx_state = 0;  // สถานะของ IR transmitter
 static uint8_t g_music_data[100] = {0};  // ข้อมูลเพลงใน Music Macro Language
+static uint64_t g_vibration_time_data[100] = {0};  // ข้อมูลเวลาที่ตรวจจับจาก vibration
+static uint64_t diff_time[100];
 static size_t g_music_data_len = 0;
+static size_t g_vibration_time_len = 0;
 static uint8_t ble_is_connected = 1;
 void set_all_leds(uint8_t red, uint8_t green, uint8_t blue);
 void sleep_call();
@@ -792,7 +799,7 @@ static void ble_disconnect_task(void *pvParameter)
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    uint64_t current_time = esp_timer_get_time() / 1000; // Get time in ms
+    uint64_t current_time = esp_timer_get_time() / 1000; 
     uint32_t gpio_num = (uint32_t) arg;
     uint8_t  level = gpio_get_level(gpio_num);
     if (gpio_num == BUTTON_PIN) {
@@ -812,12 +819,15 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
         xQueueSendFromISR(ir_evt_queue, &level, NULL);
     }
     else if (gpio_num == VIBRATION_PIN) {
-        if (level == 0) {
+        g_vibration_time_data[g_vibration_time_len]=esp_timer_get_time();
+        last_vibration_time=g_vibration_time_data[g_vibration_time_len];
+        g_vibration_time_len++;
+        if(g_vibration_time_len>=NO_OF_VIBRATION_SAMPLES){
             gpio_set_intr_type(VIBRATION_PIN, GPIO_INTR_DISABLE);
             vTaskNotifyGiveFromISR(Vibration_Handle, &xHigherPriorityTaskWoken);
-            if (xHigherPriorityTaskWoken) {
-                portYIELD_FROM_ISR();
-             }
+        }
+        if (xHigherPriorityTaskWoken) {
+            portYIELD_FROM_ISR();
         }
     } 
 }
@@ -863,7 +873,46 @@ static void ir_task(void* arg)
 
     }
 }
-void vibration_task(void *pvParameters)
+
+void vibration_task(void *pvParameters){
+    while (1) {
+        // Wait for notification
+        uint64_t avg_diff_time=0;
+        uint32_t ulNotificationValue = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        uint8_t level;
+        if (ulNotificationValue > 0) {
+            for(int i=0;i<NO_OF_VIBRATION_SAMPLES-1;i++){
+                diff_time[i]=g_vibration_time_data[i+1]-g_vibration_time_data[i];
+                avg_diff_time+=diff_time[i];
+                ESP_LOGI(Vibration_tag, "Vibration time %d : %llu", i+1, g_vibration_time_data[i+1]);
+                ESP_LOGI(Vibration_tag, "Vibration time %d : %llu", i, g_vibration_time_data[i]);
+                ESP_LOGI(Vibration_tag, "Vibration diff time %d : %llu", i, diff_time[i]);
+                vTaskDelay(1/ portTICK_PERIOD_MS);
+            }
+            avg_diff_time/=g_vibration_time_len-1;
+            ESP_LOGI(Vibration_tag, "Vibration AVG diff time : %llu", avg_diff_time);
+            g_vibration_time_len=0;
+        }
+        if(avg_diff_time==0){
+            ESP_LOGI(Vibration_tag, "Vibration not enough");
+        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        gpio_set_intr_type(VIBRATION_PIN, GPIO_INTR_NEGEDGE);
+    }
+}
+void vibration_reset(void){
+    uint64_t now_time;
+    while(1){
+        now_time=esp_timer_get_time();
+        if(now_time-last_vibration_time>=VIBRATION_TIMEOUT){
+            g_vibration_time_len=0;
+            //set ble vibration=0;
+        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+
+/*void vibration_task(void *pvParameters)
 {
     while (1) {
         // Wait for notification
@@ -885,6 +934,7 @@ void vibration_task(void *pvParameters)
             end_time= esp_timer_get_time() ; // Get time in ms
             ESP_LOGI(Vibration_tag, "Time: %llu", (end_time - begin_time));
             ESP_LOGI(Vibration_tag, "High: %d, Low: %d", high, low);
+            printf("---------");
             if(low > vibration_threshold){
                 //led_button_hit();
             }
@@ -892,7 +942,8 @@ void vibration_task(void *pvParameters)
             gpio_set_intr_type(VIBRATION_PIN, GPIO_INTR_NEGEDGE);
         }
     }
-}
+}*/
+
 void ledc_init(void)
 {
     ledc_timer_config_t ledc_timer = {
@@ -1057,6 +1108,7 @@ void app_main(void)
     xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
     xTaskCreate(ir_task, "ir_task", 2048, NULL, 10, NULL);
     xTaskCreate(vibration_task, "vibration_task", 2048, NULL, 16, &Vibration_Handle);
+    xTaskCreate(vibration_reset, "vibration_reset", 2048, NULL, 10, NULL);
 
     xTaskCreate(bat_percent_task, "bat_percent_task", 2048, NULL, 5, NULL);
     xTaskCreate(bat_status_task, "bat_status_task", 2048, NULL, 5, NULL);
