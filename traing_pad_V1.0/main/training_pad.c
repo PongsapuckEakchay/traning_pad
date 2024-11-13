@@ -777,7 +777,7 @@ void bat_percent_task(void *pvParameter)
         }
         flag = 1;
         uint16_t data = (uint16_t)smoothed_voltage;
-        if(ble_is_connected == 1 && false){
+        if(ble_is_connected == 1){
             update_advertising_data(data);
         }
         //set_batt_voltage((uint8_t)data, sizeof(data));
