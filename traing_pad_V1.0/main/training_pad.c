@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include "esp_timer.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -172,9 +173,10 @@ static const uint8_t GATTS_CHAR_UUID_MODE[16]        = { 0x0C, 0x00, 0x63, 0xE7,
 static const uint16_t primary_service_uuid         = ESP_GATT_UUID_PRI_SERVICE;
 static const uint16_t character_declaration_uuid   = ESP_GATT_UUID_CHAR_DECLARE;
 // static const uint16_t character_client_config_uuid = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
-static const uint8_t char_prop_read                =  ESP_GATT_CHAR_PROP_BIT_READ;
+// static const uint8_t char_prop_read                =  ESP_GATT_CHAR_PROP_BIT_READ;
 // static const uint8_t char_prop_write               = ESP_GATT_CHAR_PROP_BIT_WRITE;
 static const uint8_t char_prop_read_write_notify   = ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
+static const uint8_t char_prop_read_notify = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 // static const uint8_t heart_measurement_ccc[2]      = {0x00, 0x00};
 static const uint8_t char_value[4]                 = {0x11, 0x22, 0x33, 0x44};
 static uint8_t manufacturer_data[4] = {0xFF, 0xFF, 0x00, 0x00};
@@ -217,10 +219,10 @@ static const char *ble_tag = "BLE STATUS";
 static led_strip_t *strip = NULL;
 #define RMT_TX_CHANNEL RMT_CHANNEL_0
 
-static xQueueHandle button_evt_queue = NULL;
-static xQueueHandle ir_evt_queue = NULL;
-static xQueueHandle ble_data_queue = NULL;
-static xQueueHandle ble_status_queue = NULL;
+static QueueHandle_t button_evt_queue = NULL;
+static QueueHandle_t ir_evt_queue = NULL;
+static QueueHandle_t ble_data_queue = NULL;
+static QueueHandle_t ble_status_queue = NULL;
 TaskHandle_t Vibration_Handle = NULL;
 static SemaphoreHandle_t g_ble_data_mutex = NULL;
 
@@ -233,6 +235,9 @@ static uint8_t g_music_data[100] = {0};  // ข้อมูลเพลงใน
 static size_t g_music_data_len = 0;
 static uint8_t ble_is_connected = 1;
 static uint8_t g_mode = 0;  // สถานะของโหมดการทำงาน
+
+static esp_gatt_if_t gatt_if = ESP_GATT_IF_NONE;
+static uint16_t conn_id = 0;
 
 void set_all_leds(uint8_t red, uint8_t green, uint8_t blue);
 void sleep_call();
@@ -247,7 +252,7 @@ static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
     /* Characteristic Declaration for BATT_VOLTAGE (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630002) */
     [IDX_CHAR_BATT_VOLTAGE_DECL]     =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read}},
+      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for BATT_VOLTAGE */
     [IDX_CHAR_BATT_VOLTAGE_VAL] =
@@ -257,7 +262,7 @@ static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
     /* Characteristic Declaration for BATT_CHARGING (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630003) */
     [IDX_CHAR_BATT_CHARGING_DECL]     =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read}},
+      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for BATT_CHARGING */
     [IDX_CHAR_BATT_CHARGING_VAL] =
@@ -267,7 +272,7 @@ static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
     /* Characteristic Declaration for BATT_FULL (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630004) */
     [IDX_CHAR_BATT_FULL_DECL]     =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read}},
+      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for BATT_FULL */
     [IDX_CHAR_BATT_FULL_VAL] =
@@ -277,7 +282,7 @@ static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
     /* Characteristic Declaration for BUTTONS (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630005) */
     [IDX_CHAR_BUTTONS_DECL]     =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read}},
+      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for BUTTONS */
     [IDX_CHAR_BUTTONS_VAL] =
@@ -287,7 +292,7 @@ static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
     /* Characteristic Declaration for VIBRATION (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630006) */
     [IDX_CHAR_VIBRATION_DECL]     =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read}},
+      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for VIBRATION */
     [IDX_CHAR_VIBRATION_VAL] =
@@ -297,7 +302,7 @@ static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
     /* Characteristic Declaration for IR_RX (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630007) */
     [IDX_CHAR_IR_RX_DECL]     =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read}},
+      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for IR_RX */
     [IDX_CHAR_IR_RX_VAL] =
@@ -494,6 +499,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     
     switch (event) {
         case ESP_GATTS_REG_EVT:{
+            gatt_if = gatts_if;
             esp_err_t set_dev_name_ret = esp_ble_gap_set_device_name(SAMPLE_DEVICE_NAME);
             if (set_dev_name_ret){
                 ESP_LOGE(GATTS_TABLE_TAG, "set device name failed, error code = %x", set_dev_name_ret);
@@ -565,8 +571,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             ESP_LOGI(GATTS_TABLE_TAG, "SERVICE_START_EVT, status %d, service_handle %d", param->start.status, param->start.service_handle);
             break;
         case ESP_GATTS_CONNECT_EVT:
-            ble_is_connected = 0;
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_CONNECT_EVT, conn_id = %d", param->connect.conn_id);
+            ble_is_connected = 0;
+            conn_id = param->connect.conn_id;
             esp_log_buffer_hex(GATTS_TABLE_TAG, param->connect.remote_bda, 6);
             esp_ble_conn_update_params_t conn_params = {0};
             memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
@@ -646,6 +653,10 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             }
         }
     } while (0);
+}
+
+static void ble_send_notify(uint16_t handle, uint8_t *value, size_t len) {
+    esp_ble_gatts_send_indicate(gatt_if, conn_id, handle, len, value, false);
 }
 
 // #################### END BLE ####################
@@ -766,11 +777,12 @@ void bat_percent_task(void *pvParameter)
         }
         flag = 1;
         uint16_t data = (uint16_t)smoothed_voltage;
-        if(ble_is_connected == 1){
+        if(ble_is_connected == 1 && false){
             update_advertising_data(data);
         }
         //set_batt_voltage((uint8_t)data, sizeof(data));
         ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_VOLTAGE_VAL], sizeof(data), &data);
+        ble_send_notify(iwing_training_table[IDX_CHAR_BATT_VOLTAGE_VAL], &data, sizeof(data));
         ESP_LOGI(adc_tag, " voltage : %d ,Smoothed Voltage: %.2fmV, data : %d error code : %x",voltage, smoothed_voltage,data,ret);
         //vTaskDelay(pdMS_TO_TICKS(5000));
     }
@@ -792,14 +804,20 @@ void bat_status_task(void *pvParameter)
             ESP_LOGI(adc_tag, "Battery Status: Fully Charged\tVoltage: %dmV", voltage);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], sizeof(no), &no);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], sizeof(yes), &yes);
+            ble_send_notify(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], &yes, sizeof(yes));
+            ble_send_notify(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], &no, sizeof(no));
         } else if (voltage > 700) {
             ESP_LOGI(adc_tag, "Battery Status: Not Charged\tVoltage: %dmV", voltage);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], sizeof(no), &no);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], sizeof(no), &no);
+            ble_send_notify(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], &no, sizeof(no));
+            ble_send_notify(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], &no, sizeof(no));
         } else if (voltage < 300) {
             ESP_LOGI(adc_tag, "Battery Status: Charging \tVoltage: %dmV", voltage);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], sizeof(yes), &yes);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], sizeof(no), &no);
+            ble_send_notify(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], &no, sizeof(no));
+            ble_send_notify(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], &yes, sizeof(yes));
         }
         ESP_LOGI(adc_tag, "voltage \tVoltage: %dmV", voltage);
         vTaskDelay(pdMS_TO_TICKS(5000));
@@ -876,6 +894,7 @@ static void button_task(void* arg)
             //printf("GPIO[%"PRIu32"] intr, val: %d\n", io_num, gpio_get_level(io_num));
             //printf("GPIO[button] intr, val: %d\n", level);
             ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BUTTONS_VAL], sizeof(level), &level);
+            ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
             if (ret != ESP_OK) {
                 ESP_LOGE(ble_tag, "Failed to set button value : %d", ret);
             }
@@ -898,6 +917,7 @@ static void ir_task(void* arg)
                 level = 1;
             }
             ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_IR_RX_VAL], sizeof(level), &level);
+            ble_send_notify(iwing_training_table[IDX_CHAR_IR_RX_VAL], &level, sizeof(level));
             if (ret != ESP_OK) {
                 ESP_LOGE(ble_tag, "Failed to set IR value : %d", ret);
             }
@@ -936,6 +956,7 @@ void vibration_task(void *pvParameters)
             if(low > vibration_threshold){
                 //led_button_hit();
                 ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_VIBRATION_VAL], sizeof(on), &on);
+                ble_send_notify(iwing_training_table[IDX_CHAR_VIBRATION_VAL], &on, sizeof(on));
                 if (ret != ESP_OK) {
                     ESP_LOGE(ble_tag, "Failed to set vibration value : %d", ret);
                 }
@@ -945,6 +966,7 @@ void vibration_task(void *pvParameters)
             }
             vTaskDelay(1000 / portTICK_PERIOD_MS);
             ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_VIBRATION_VAL], sizeof(off), &off);
+            ble_send_notify(iwing_training_table[IDX_CHAR_VIBRATION_VAL], &off, sizeof(off));
             if (ret != ESP_OK) {
                 ESP_LOGE(ble_tag, "Failed to set vibration value : %d", ret);
             }
