@@ -1,10 +1,1 @@
-0000000000000000000000000000000000000000 fc0e500372990e5a1b3b69c34cd80658bb58a21d Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1726551686 +0700	commit (initial): first commit
-fc0e500372990e5a1b3b69c34cd80658bb58a21d fc0e500372990e5a1b3b69c34cd80658bb58a21d Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1726551686 +0700	Branch: renamed refs/heads/main to refs/heads/main
-fc0e500372990e5a1b3b69c34cd80658bb58a21d fc0e500372990e5a1b3b69c34cd80658bb58a21d Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1726551967 +0700	Branch: renamed refs/heads/main to refs/heads/main
-fc0e500372990e5a1b3b69c34cd80658bb58a21d 3341f3c45928cf17eb541f77e297e2d468227923 Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1726628246 +0700	commit: this is my first commeit
-3341f3c45928cf17eb541f77e297e2d468227923 3341f3c45928cf17eb541f77e297e2d468227923 Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1726628398 +0700	Branch: renamed refs/heads/main to refs/heads/main
-3341f3c45928cf17eb541f77e297e2d468227923 3341f3c45928cf17eb541f77e297e2d468227923 Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1726628434 +0700	Branch: renamed refs/heads/main to refs/heads/main
-3341f3c45928cf17eb541f77e297e2d468227923 3341f3c45928cf17eb541f77e297e2d468227923 Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1726628436 +0700	Branch: renamed refs/heads/main to refs/heads/main
-3341f3c45928cf17eb541f77e297e2d468227923 da3e0d8570b4e21c3c990450721cbd12f83e39fc Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1727073403 +0700	commit: BLE+I/O
-da3e0d8570b4e21c3c990450721cbd12f83e39fc d1ba02c80ce8e73e346259750c0bbe99b2c48125 Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1727252345 +0700	commit: BLE+I/O+deep_sleep
-d1ba02c80ce8e73e346259750c0bbe99b2c48125 3857884e261cbd9b7bf7063afc15aac9b676a666 Pongsapuck Eakchay <ai@MacBook-Air-khxng-Pongsapuck.local> 1727253760 +0700	commit: seperate function
+d64a99770045dae4c81a8b04023894b0e39644c9

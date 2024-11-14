@@ -45,7 +45,7 @@ enum
     IDX_CHAR_MUSIC_DECL,               // Characteristic Declaration for MUSIC
     IDX_CHAR_MUSIC_VAL,                // Characteristic Value for MUSIC
 
-    IDX_VHAR_MODE_DECL,                // Characteristic Declaration for MODE
+    IDX_CHAR_MODE_DECL,                // Characteristic Declaration for MODE
     IDX_CHAR_MODE,                     // Characteristic Value for MODE
 
     IWING_TRAINER_IDX_NB               // Number of attributes

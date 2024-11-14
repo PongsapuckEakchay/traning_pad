@@ -190,7 +190,7 @@ static uint8_t manufacturer_data[4] = {0xFF, 0xFF, 0x00, 0x00};
 #define ESP_INTR_FLAG_DEFAULT 0
 #define DEBOUNCE_TIME_MS   20 // 200 ms debounce time
 #define SAMPLES 100
-static int vibration_threshold = 40;
+static int vibration_threshold = 1;
 
 #define IR_PWM_TMER              LEDC_TIMER_0
 #define IR_PWM_MODE               LEDC_LOW_SPEED_MODE
@@ -203,6 +203,8 @@ static int vibration_threshold = 40;
 #define NO_OF_SAMPLES   64          // Multisampling
 #define ALPHA           0.3         // Exponential smoothing factor
 
+#define BATT_DIVIDED_FACTOR 5 //multiply with batt data before send
+\
 static esp_adc_cal_characteristics_t *adc_chars;
 static const adc_channel_t percent_bat_channel = ADC_CHANNEL_6;     // GPIO34 if ADC1
 static const adc_bits_width_t width = ADC_WIDTH_BIT_12;
@@ -232,7 +234,7 @@ static uint8_t g_ir_tx_state = 0;  // สถานะของ IR transmitter
 static uint8_t g_music_data[100] = {0};  // ข้อมูลเพลงใน Music Macro Language
 static size_t g_music_data_len = 0;
 static uint8_t ble_is_connected = 1;
-static uint8_t g_mode = 0;  // สถานะของโหมดการทำงาน
+static uint8_t g_mode = 0;  // สถานะของโหมดการทำงาน (0 = ปกติ, 1 = โหมด calibration)
 
 void set_all_leds(uint8_t red, uint8_t green, uint8_t blue);
 void sleep_call();
@@ -345,7 +347,7 @@ static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
       GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RW: โน้ตเพลงในรูป Music Macro Language
 
      /* Characteristic Declaration for MODE (UUID: B2E9FDA1-822C-4729-B8E2-9C35E763000C) */
-    [IDX_CHAR_MODE] =
+    [IDX_CHAR_MODE_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write_notify}},
 
@@ -663,6 +665,9 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
         g_music_data_len = len;
     } else if (handle == iwing_training_table[IDX_CHAR_MODE] && len == 1) {
         g_mode = value[0];
+        if(g_mode == 0) {
+           set_all_leds(0, 0, 0);
+        } 
     }
     xSemaphoreGive(g_ble_data_mutex);
 }
@@ -683,10 +688,12 @@ static void ble_data_task(void *pvParameter) {
                     if(g_ir_tx_state == 0) {
                         ESP_ERROR_CHECK(ledc_set_duty(IR_PWM_MODE, IR_PWM_CHANNEL, 0));
                         ESP_ERROR_CHECK(ledc_update_duty(IR_PWM_MODE, IR_PWM_CHANNEL));
+                        gpio_set_intr_type(IR_RECEIVER_PIN, GPIO_INTR_ANYEDGE);
                         printf("IR LED OFF\n");
                     } else {
                         ESP_ERROR_CHECK(ledc_set_duty(IR_PWM_MODE, IR_PWM_CHANNEL, IR_PWM_DUTY));
                         ESP_ERROR_CHECK(ledc_update_duty(IR_PWM_MODE, IR_PWM_CHANNEL));
+                        gpio_set_intr_type(IR_RECEIVER_PIN, GPIO_INTR_DISABLE);
                         printf("IR LED ON\n");
                     }
                 } else if(param->write.handle == iwing_training_table[IDX_CHAR_MUSIC_VAL]) {
@@ -765,13 +772,13 @@ void bat_percent_task(void *pvParameter)
             }
         }
         flag = 1;
-        uint16_t data = (uint16_t)smoothed_voltage;
+        uint16_t data = (uint16_t)smoothed_voltage * BATT_DIVIDED_FACTOR;
         if(ble_is_connected == 1){
             update_advertising_data(data);
         }
         //set_batt_voltage((uint8_t)data, sizeof(data));
         ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_VOLTAGE_VAL], sizeof(data), &data);
-        ESP_LOGI(adc_tag, " voltage : %d ,Smoothed Voltage: %.2fmV, data : %d error code : %x",voltage, smoothed_voltage,data,ret);
+        //ESP_LOGI(adc_tag, " voltage : %d ,Smoothed Voltage: %.2fmV, data : %d error code : %x",voltage, smoothed_voltage,data,ret);
         //vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
@@ -789,19 +796,19 @@ void bat_status_task(void *pvParameter)
         adc_reading /= NO_OF_SAMPLES;
         uint32_t voltage = esp_adc_cal_raw_to_voltage(adc_reading, adc_chars);
         if (voltage > 900) {
-            ESP_LOGI(adc_tag, "Battery Status: Fully Charged\tVoltage: %dmV", voltage);
+            //ESP_LOGI(adc_tag, "Battery Status: Fully Charged\tVoltage: %dmV", voltage);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], sizeof(no), &no);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], sizeof(yes), &yes);
         } else if (voltage > 700) {
-            ESP_LOGI(adc_tag, "Battery Status: Not Charged\tVoltage: %dmV", voltage);
+            //ESP_LOGI(adc_tag, "Battery Status: Not Charged\tVoltage: %dmV", voltage);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], sizeof(no), &no);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], sizeof(no), &no);
-        } else if (voltage < 300) {
-            ESP_LOGI(adc_tag, "Battery Status: Charging \tVoltage: %dmV", voltage);
+        } else if (voltage < 500) {
+            //ESP_LOGI(adc_tag, "Battery Status: Charging \tVoltage: %dmV", voltage);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_CHARGING_VAL], sizeof(yes), &yes);
             esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_FULL_VAL], sizeof(no), &no);
         }
-        ESP_LOGI(adc_tag, "voltage \tVoltage: %dmV", voltage);
+        //ESP_LOGI(adc_tag, "voltage \tVoltage: %dmV", voltage);
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
@@ -892,17 +899,26 @@ static void ir_task(void* arg)
     for(;;) {
         if(xQueueReceive(ir_evt_queue, &level, portMAX_DELAY)) {
             //printf("GPIO[IR] intr, val: %d\n", level);
+            ESP_LOGE(ble_tag, "level g_mode  : %d    ,   %d", level,g_mode);
             if(level == 1) {
                 level = 0;
+                if(g_mode == 1){
+                    set_all_leds(0, 0, 0);
+                }
             }else if(level == 0) {
                 level = 1;
+                if(g_mode == 1){
+                    set_all_leds(0, 255, 0);
+                }
             }
-            ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_IR_RX_VAL], sizeof(level), &level);
-            if (ret != ESP_OK) {
-                ESP_LOGE(ble_tag, "Failed to set IR value : %d", ret);
-            }
-            else {
-                ESP_LOGI(ble_tag, "IR RX value set to : %d", level);
+            if(g_mode == 0){
+                ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_IR_RX_VAL], sizeof(level), &level);
+                if (ret != ESP_OK) {
+                    ESP_LOGE(ble_tag, "Failed to set IR value : %d", ret);
+                }
+                else {
+                    ESP_LOGI(ble_tag, "IR RX value set to : %d", level);
+                }
             }
         }
 
@@ -911,7 +927,7 @@ static void ir_task(void* arg)
 void vibration_task(void *pvParameters)
 {
     esp_err_t ret;
-    uint8_t on = 1;
+    uint8_t on = 255;
     uint8_t off = 0;
     while (1) {
         // Wait for notification
@@ -940,7 +956,7 @@ void vibration_task(void *pvParameters)
                     ESP_LOGE(ble_tag, "Failed to set vibration value : %d", ret);
                 }
                 else {
-                    ESP_LOGI(ble_tag, "vibration value set to : 1");
+                    ESP_LOGI(ble_tag, "vibration value set to : 255");
                 }
             }
             vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -949,12 +965,13 @@ void vibration_task(void *pvParameters)
                 ESP_LOGE(ble_tag, "Failed to set vibration value : %d", ret);
             }
             else {
-                ESP_LOGI(ble_tag, "vibration value set to : 1");
+                ESP_LOGI(ble_tag, "vibration value set to : 0");
             }
             gpio_set_intr_type(VIBRATION_PIN, GPIO_INTR_NEGEDGE);
         }
     }
 }
+
 void ledc_init(void)
 {
     ledc_timer_config_t ledc_timer = {
@@ -1117,6 +1134,7 @@ void app_main(void)
     ir_evt_queue = xQueueCreate(10, sizeof(uint32_t));
     ble_data_queue = xQueueCreate(20, sizeof(esp_ble_gatts_cb_param_t *));
     ble_status_queue = xQueueCreate(10, sizeof(uint8_t));   
+    //mode_queue = xQueueCreate(10, sizeof(uint8_t));
 
     xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
     xTaskCreate(ir_task, "ir_task", 2048, NULL, 10, NULL);
@@ -1126,7 +1144,7 @@ void app_main(void)
     xTaskCreate(bat_status_task, "bat_status_task", 2048, NULL, 5, NULL);
     xTaskCreate(ble_data_task, "ble_data_task", 2048, NULL, 10, NULL);
     xTaskCreate(ble_disconnect_task, "ble_disconnect_task", 2048, NULL, 5, NULL);
-
+    //xTaskCreate(calibrate_task, "calibrate_task", 2048, NULL, 10, NULL);
     while(1) {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
