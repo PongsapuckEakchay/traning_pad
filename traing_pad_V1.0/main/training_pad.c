@@ -172,7 +172,8 @@ static const uint8_t GATTS_CHAR_UUID_MODE[16]        = { 0x0C, 0x00, 0x63, 0xE7,
 
 static const uint16_t primary_service_uuid         = ESP_GATT_UUID_PRI_SERVICE;
 static const uint16_t character_declaration_uuid   = ESP_GATT_UUID_CHAR_DECLARE;
-// static const uint16_t character_client_config_uuid = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+static const uint16_t character_client_config_uuid = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+static uint16_t cccd_value = 0x0000;
 // static const uint8_t char_prop_read                =  ESP_GATT_CHAR_PROP_BIT_READ;
 // static const uint8_t char_prop_write               = ESP_GATT_CHAR_PROP_BIT_WRITE;
 static const uint8_t char_prop_read_write_notify   = ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
@@ -245,120 +246,190 @@ void sleep_call();
 static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
 {
     // Service Declaration for IWING_TRAINER (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630001)
-    [IDX_SVC]        =
+    [IDX_SVC] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&primary_service_uuid, ESP_GATT_PERM_READ,
       sizeof(uint16_t), ESP_UUID_LEN_128, (uint8_t *)&GATTS_SERVICE_UUID_TEST}},
 
     /* Characteristic Declaration for BATT_VOLTAGE (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630002) */
-    [IDX_CHAR_BATT_VOLTAGE_DECL]     =
+    [IDX_CHAR_BATT_VOLTAGE_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for BATT_VOLTAGE */
     [IDX_CHAR_BATT_VOLTAGE_VAL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_BATT_VOLTAGE, ESP_GATT_PERM_READ,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RO: ระดับแรงดันแบตเตอรี่ (mV)
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RO: Battery voltage level (mV)
+
+    /* Client Characteristic Configuration Descriptor for BATT_VOLTAGE */
+    [IDX_CHAR_BATT_VOLTAGE_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for BATT_CHARGING (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630003) */
-    [IDX_CHAR_BATT_CHARGING_DECL]     =
+    [IDX_CHAR_BATT_CHARGING_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for BATT_CHARGING */
     [IDX_CHAR_BATT_CHARGING_VAL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_BATT_CHARGING, ESP_GATT_PERM_READ,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RO: สถานะการเสียบชาร์จแบตเตอรี่ (1 = charging)
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RO: Charging status (1 = charging)
+
+    /* Client Characteristic Configuration Descriptor for BATT_CHARGING */
+    [IDX_CHAR_BATT_CHARGING_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for BATT_FULL (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630004) */
-    [IDX_CHAR_BATT_FULL_DECL]     =
+    [IDX_CHAR_BATT_FULL_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for BATT_FULL */
     [IDX_CHAR_BATT_FULL_VAL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_BATT_FULL, ESP_GATT_PERM_READ,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RO: สถานะแบตเตอรี่ชาร์จเต็ม (1 = full)
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RO: Battery full status (1 = full)
+
+    /* Client Characteristic Configuration Descriptor for BATT_FULL */
+    [IDX_CHAR_BATT_FULL_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for BUTTONS (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630005) */
-    [IDX_CHAR_BUTTONS_DECL]     =
+    [IDX_CHAR_BUTTONS_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
+      CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write_notify}},
 
     /* Characteristic Value for BUTTONS */
     [IDX_CHAR_BUTTONS_VAL] =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_BUTTONS, ESP_GATT_PERM_READ,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RO: สถานะปุ่มกด บิตละ 1 ปุ่ม (1 = กด)
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_BUTTONS, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RO: Button status (1 = pressed)
+
+    /* Client Characteristic Configuration Descriptor for BUTTONS */
+    [IDX_CHAR_BUTTONS_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for VIBRATION (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630006) */
-    [IDX_CHAR_VIBRATION_DECL]     =
+    [IDX_CHAR_VIBRATION_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for VIBRATION */
     [IDX_CHAR_VIBRATION_VAL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_VIBRATION, ESP_GATT_PERM_READ,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RO: สถานะ vibration sensor ไบต์ละ 1 ตัว (255 = เคลื่อนไหวแรงสุด)
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RO: Vibration sensor status
+
+    /* Client Characteristic Configuration Descriptor for VIBRATION */
+    [IDX_CHAR_VIBRATION_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for IR_RX (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630007) */
-    [IDX_CHAR_IR_RX_DECL]     =
+    [IDX_CHAR_IR_RX_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_notify}},
 
     /* Characteristic Value for IR_RX */
     [IDX_CHAR_IR_RX_VAL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_IR_RX, ESP_GATT_PERM_READ,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RO: สถานะ IR Receiver (1 = ได้รับสัญญาณ)
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RO: IR Receiver status (1 = signal received)
+
+    /* Client Characteristic Configuration Descriptor for IR_RX */
+    [IDX_CHAR_IR_RX_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for VIB_THRES (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630008) */
-    [IDX_CHAR_VIB_THRES_DECL]     =
+    [IDX_CHAR_VIB_THRES_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write_notify}},
 
     /* Characteristic Value for VIB_THRES */
     [IDX_CHAR_VIB_THRES_VAL] =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_VIB_THRES, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RW: threshold สำหรับ vibration sensor (8 บิต)
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_VIB_THRES,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RW: Vibration threshold
+
+    /* Client Characteristic Configuration Descriptor for VIB_THRES */
+    [IDX_CHAR_VIB_THRES_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for LED (UUID: B2E9FDA1-822C-4729-B8E2-9C35E7630009) */
-    [IDX_CHAR_LED_DECL]     =
+    [IDX_CHAR_LED_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write_notify}},
 
     /* Characteristic Value for LED */
     [IDX_CHAR_LED_VAL] =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_LED, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RW: สีของ RGB LED ดวงละ 3 ไบต์ (RGB x 8 บิต)
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_LED,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RW: RGB LED color
+
+    /* Client Characteristic Configuration Descriptor for LED */
+    [IDX_CHAR_LED_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for IR_TX (UUID: B2E9FDA1-822C-4729-B8E2-9C35E763000A) */
-    [IDX_CHAR_IR_TX_DECL]     =
+    [IDX_CHAR_IR_TX_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write_notify}},
 
     /* Characteristic Value for IR_TX */
     [IDX_CHAR_IR_TX_VAL] =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_IR_TX, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RW: สถานะ IR Transmitter (1 = เปิดใช้งาน)
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_IR_TX,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RW: IR Transmitter status
+
+    /* Client Characteristic Configuration Descriptor for IR_TX */
+    [IDX_CHAR_IR_TX_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 
     /* Characteristic Declaration for MUSIC (UUID: B2E9FDA1-822C-4729-B8E2-9C35E763000B) */
-    [IDX_CHAR_MUSIC_DECL]     =
+    [IDX_CHAR_MUSIC_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write_notify}},
 
     /* Characteristic Value for MUSIC */
     [IDX_CHAR_MUSIC_VAL] =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_MUSIC, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RW: โน้ตเพลงในรูป Music Macro Language
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_MUSIC,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RW: Music notes in MML
 
-     /* Characteristic Declaration for MODE (UUID: B2E9FDA1-822C-4729-B8E2-9C35E763000C) */
-    [IDX_CHAR_MODE] =
+    /* Client Characteristic Configuration Descriptor for MUSIC */
+    [IDX_CHAR_MUSIC_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
+
+    /* Characteristic Declaration for MODE (UUID: B2E9FDA1-822C-4729-B8E2-9C35E763000C) */
+    [IDX_CHAR_MODE_DECL] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
       CHAR_DECLARATION_SIZE, CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write_notify}},
 
     /* Characteristic Value for MODE */
     [IDX_CHAR_MODE] =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_MODE, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)char_value}}, // RW: สถานะ MODE (1 = เปิดใช้งานการ calibrate  , 0 = ปิดการ calibrate)
-    
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_MODE,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RW: Mode status (1 = calibrate on)
+
+    /* Client Characteristic Configuration Descriptor for MODE */
+    [IDX_CHAR_MODE_CCCD] =
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid,
+      ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+      sizeof(uint16_t), sizeof(uint16_t), (uint8_t *)&cccd_value}},
 };
 
 
@@ -777,7 +848,7 @@ void bat_percent_task(void *pvParameter)
         }
         flag = 1;
         uint16_t data = (uint16_t)smoothed_voltage;
-        if(ble_is_connected == 1 && false){
+        if(ble_is_connected == 1){
             update_advertising_data(data);
         }
         //set_batt_voltage((uint8_t)data, sizeof(data));
