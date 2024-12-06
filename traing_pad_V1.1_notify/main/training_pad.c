@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <string.h>
+#include <ctype.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -203,7 +205,8 @@ static uint8_t manufacturer_data[4] = {0xFF, 0xFF, 0x00, 0x00};
 #define LED_BREAHTING_STEP 5
 static int vibration_threshold = 1;
 static int last_level = 1;
-#define IR_PWM_TMER              LEDC_TIMER_0
+
+#define IR_PWM_TMER               LEDC_TIMER_0
 #define IR_PWM_MODE               LEDC_LOW_SPEED_MODE
 #define IR_PWM_CHANNEL            LEDC_CHANNEL_0
 #define IR_PWM_DUTY_RES           LEDC_TIMER_10_BIT // 10 bit duty resolution
@@ -215,6 +218,29 @@ static int last_level = 1;
 #define ALPHA           0.3         // Exponential smoothing factor
 
 #define BATT_DIVIDED_FACTOR 5 //multiply with batt data before send
+
+#define BUZZER_TIMER              LEDC_TIMER_1
+#define BUZZER_MODE               LEDC_LOW_SPEED_MODE
+#define BUZZER_OUTPUT_IO          (2) // Define the output GPIO
+#define BUZZER_CHANNEL            LEDC_CHANNEL_1
+#define BUZZER_DUTY_RES           LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
+#define BUZZER_DUTY               (4095) // Set duty to 50%. ((2 ** 13) - 1) * 50% = 4095
+#define MAX_OCTAVE 8
+#define MIN_OCTAVE 1
+#define DEFAULT_OCTAVE 4
+#define DEFAULT_DURATION 4
+#define DEFAULT_TEMPO 120
+#define MAX_SONG_LENGTH 100
+
+// Base frequencies for octave 4
+const int base_frequencies[] = {
+    262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494
+};
+static int current_octave;
+static int default_duration;
+static int tempo;
+static char current_song[MAX_SONG_LENGTH] = {0};  // ตัวแปร global สำหรับเก็บโน้ตเพลง
+static TaskHandle_t mml_task_handle = NULL;       // handle สำหรับจัดการ task
 
 static esp_adc_cal_characteristics_t *adc_chars;
 static const adc_channel_t percent_bat_channel = ADC_CHANNEL_6;     // GPIO34 if ADC1
@@ -255,6 +281,8 @@ static uint16_t conn_id = 0;
 
 void set_all_leds(uint8_t red, uint8_t green, uint8_t blue);
 void sleep_call();
+void set_song();
+void stop_song();
 // #################### BLE ####################
 static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
 { 
@@ -821,6 +849,7 @@ static void ble_data_task(void *pvParameter) {
                     for (int i = 0; i < g_music_data_len; i++) {
                         printf("%c ", (char)g_music_data[i]);
                     }
+                    set_song();
                     printf("\n");
                 } else if(param->write.handle == iwing_training_table[IDX_CHAR_MODE]) {
                     printf("New mode: A:0x%02X B:0x%02X C:0x%02X D:0x%02X\n",  g_mode[0], g_mode[1], g_mode[2], g_mode[3]);
@@ -1201,6 +1230,161 @@ void vibration_task(void *pvParameters)
         }
     }
 }
+void play_note(int frequency, int duration_ms) {
+    if (frequency > 0) {
+        ESP_ERROR_CHECK(ledc_set_freq(BUZZER_MODE, BUZZER_TIMER, frequency));
+        ESP_ERROR_CHECK(ledc_set_duty(BUZZER_MODE, BUZZER_CHANNEL, BUZZER_DUTY));
+        ESP_ERROR_CHECK(ledc_update_duty(BUZZER_MODE, BUZZER_CHANNEL));
+        vTaskDelay(duration_ms / portTICK_PERIOD_MS);
+        ESP_ERROR_CHECK(ledc_set_duty(BUZZER_MODE, BUZZER_CHANNEL, 0));
+        ESP_ERROR_CHECK(ledc_update_duty(BUZZER_MODE, BUZZER_CHANNEL));
+    } else {
+        vTaskDelay(duration_ms / portTICK_PERIOD_MS);
+    }
+}
+
+int get_frequency(char note, char accidental)
+{
+    int base_index;
+    switch (tolower(note)) {
+        case 'c': base_index = 0; break;
+        case 'd': base_index = 2; break;
+        case 'e': base_index = 4; break;
+        case 'f': base_index = 5; break;
+        case 'g': base_index = 7; break;
+        case 'a': base_index = 9; break;
+        case 'b': base_index = 11; break;
+        default: return 0;
+    }
+
+    if (accidental == '+' || accidental == '#') base_index++;
+    else if (accidental == '-') base_index--;
+
+    int frequency = base_frequencies[base_index % 12];
+    for (int i = 4; i < current_octave; i++) frequency *= 2;
+    for (int i = 4; i > current_octave; i--) frequency /= 2;
+    
+    return frequency;
+}
+
+void reset_mml_state(void)
+{
+    current_octave = DEFAULT_OCTAVE;
+    default_duration = DEFAULT_DURATION;
+    tempo = DEFAULT_TEMPO;
+}
+
+void play_mml(const char* mml)
+{
+
+    reset_mml_state();  // Reset state before playing
+
+    char note, accidental;
+    int duration, dot;
+    const char* p = mml;
+
+    while (*p) {
+        note = *p++;
+        accidental = 0;
+        duration = default_duration;
+        dot = 0;
+
+        //printf("note: %c\n", note);
+
+        if (*p == '+' || *p == '#' || *p == '-') {
+            accidental = *p++;
+        }
+
+        if (note == 't' && isdigit(*p)) {  // Change tempo
+            tempo = 0;
+            while (isdigit(*p)) {
+                tempo = tempo * 10 + (*p++ - '0');
+            }
+            //printf("Tempo changed to: %d\n", tempo);
+            continue;
+        }
+
+        if (isdigit(*p)) {
+            duration = 0;
+            while (isdigit(*p)) {
+                duration = duration * 10 + (*p++ - '0');
+            }
+        }
+
+        if (*p == '.') {
+            dot = 1;
+            p++;
+        }
+
+        int note_duration = (60000 / tempo) * (4.0 / duration);
+        if (dot) note_duration += note_duration / 2;
+
+        switch (tolower(note)) {
+            case 'c':
+            case 'd':
+            case 'e':
+            case 'f':
+            case 'g':
+            case 'a':
+            case 'b':
+                play_note(get_frequency(note, accidental), note_duration);
+                break;
+            case 'p':
+            case 'r':
+                play_note(0, note_duration);
+                break;
+            case 'o':
+                if (isdigit(*p)) {
+                    current_octave = *p++ - '0';
+                    if (current_octave < MIN_OCTAVE) current_octave = MIN_OCTAVE;
+                    if (current_octave > MAX_OCTAVE) current_octave = MAX_OCTAVE;
+                }
+                break;
+            case '>':
+                if (current_octave < MAX_OCTAVE) current_octave++;
+                break;
+            case '<':
+                if (current_octave > MIN_OCTAVE) current_octave--;
+                break;
+            case 'l':
+                if (isdigit(*p)) {
+                    default_duration = 0;
+                    while (isdigit(*p)) {
+                        default_duration = default_duration * 10 + (*p++ - '0');
+                    }
+                }
+                break;
+        }
+    }
+}
+void song_task(void* pvParameters)
+{
+    const char* song = (const char*) pvParameters;
+    while(1) {
+       if (strlen(current_song) > 0) {  // เช็คว่ามีเพลงอยู่ใน buffer หรือไม่
+            play_mml(current_song);
+            vTaskDelay(2000 / portTICK_PERIOD_MS); // รอ 2 วินาทีก่อนเล่นซ้ำ
+        } else {
+            vTaskDelay(100 / portTICK_PERIOD_MS); // ถ้าไม่มีเพลง รอสักครู่แล้วเช็คใหม่
+        }
+    }
+}
+void set_song() {
+    char new_song[g_music_data_len];
+    for(int i =0;i<g_music_data_len;i++){
+        new_song[i] = (char)g_music_data[i];
+    }
+    strncpy(current_song, new_song, MAX_SONG_LENGTH - 1);
+    current_song[MAX_SONG_LENGTH - 1] = '\0';  // ป้องกันการ overflow
+}
+
+// ฟังก์ชันสำหรับหยุดเพลง
+void stop_song(void) {
+    current_song[0] = '\0';  // เคลียร์เพลงโดยการตั้งค่าสตริงว่าง
+    // หยุดเสียงที่กำลังเล่นอยู่
+    ESP_ERROR_CHECK(ledc_set_duty(BUZZER_MODE, BUZZER_CHANNEL, 0));
+    ESP_ERROR_CHECK(ledc_update_duty(BUZZER_MODE, BUZZER_CHANNEL));
+}
 
 void ledc_init(void)
 {
@@ -1223,7 +1407,27 @@ void ledc_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
+static void buzzer_init(void) {
+    ledc_timer_config_t buzzer_timer = {
+        .speed_mode       = BUZZER_MODE,
+        .timer_num        = BUZZER_TIMER,
+        .duty_resolution  = BUZZER_DUTY_RES,
+        .freq_hz          = 440,  // Default frequency (A4)
+        .clk_cfg          = LEDC_AUTO_CLK
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&buzzer_timer));
 
+    ledc_channel_config_t buzzer_channel = {
+        .speed_mode     = BUZZER_MODE,
+        .channel        = BUZZER_CHANNEL,
+        .timer_sel      = BUZZER_TIMER,
+        .intr_type      = LEDC_INTR_DISABLE,
+        .gpio_num       = BUZZER_OUTPUT_IO,
+        .duty           = 0,
+        .hpoint         = 0
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&buzzer_channel));
+}
 void rgb_led_init(void){
     rmt_config_t config = RMT_DEFAULT_CONFIG_TX(CONFIG_EXAMPLE_RMT_TX_GPIO, RMT_TX_CHANNEL);
     config.clk_div = 2;
@@ -1254,16 +1458,19 @@ void gpio_init(void){
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
+
     io_conf.intr_type = GPIO_INTR_NEGEDGE;
     io_conf.pin_bit_mask = GPIO_INPUT_BUTTON_PIN_SEL ;
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
+
     io_conf.intr_type = GPIO_INTR_NEGEDGE;
     io_conf.pin_bit_mask = GPIO_INPUT_VIBRATION_PIN_SEL ;
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
+
     io_conf.intr_type = GPIO_INTR_DISABLE;  // Outputs typically don't need interrupts
     io_conf.pin_bit_mask = GPIO_SONIC_PIN_SEL; // Define GPIO_OUTPUT_PIN_SEL for your pin
     io_conf.mode = GPIO_MODE_OUTPUT;
@@ -1380,6 +1587,7 @@ void app_main(void)
     ledc_init();
     gpio_init();
     adc_init();
+    buzzer_init();
     //ble_data_inint();
     
     g_ble_data_mutex = xSemaphoreCreateMutex();
@@ -1402,6 +1610,7 @@ void app_main(void)
     xTaskCreate(bat_status_task, "bat_status_task", 2048, NULL, 5, NULL);
     xTaskCreate(ble_data_task, "ble_data_task", 2048, NULL, 10, NULL);
     xTaskCreate(ble_disconnect_task, "ble_disconnect_task", 2048, NULL, 5, NULL);
+    xTaskCreate(song_task, "song_task", 2048, NULL, 5, NULL);
     //xTaskCreate(calibrate_task, "calibrate_task", 2048, NULL, 10, NULL);
     while(1) {
         vTaskDelay(1000 / portTICK_PERIOD_MS);

@@ -7,7 +7,7 @@ menu "Example Configuration"
 
     config EXAMPLE_STRIP_LED_NUMBER
         int "Number of LEDS in a strip"
-        default 5
+        default 1
         help
             A single RGB strip contains several LEDs.
 endmenu
