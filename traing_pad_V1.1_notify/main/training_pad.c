@@ -765,6 +765,7 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
         if(g_mode[3] == 0) {
             // Normal mode
             //set_all_leds(0, 0, 0);
+            ESP_LOGI(ble_tag, "Normal mode");
         } else if(g_mode[3] == 1) {
             // IR calibrate mode
             // LED handling in ir_task
@@ -777,10 +778,12 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 gpio_set_level(VIBRATION_EN_PIN, 0);
                 //printf("Distance: set\n");
+                ESP_LOGI(ble_tag, "Distance: set");
             }
         } else if(g_mode[3] == 3) {
             // Press only mode
             // Button handling stays in button_task
+            ESP_LOGI(ble_tag, "Press only mode");
         }
     }
     xSemaphoreGive(g_ble_data_mutex);
@@ -978,6 +981,7 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
                 vTaskNotifyGiveFromISR(Button_Handle, &xHigherPriorityTaskWoken);
             }
         }
+        
     } 
     else if (gpio_num == IR_RECEIVER_PIN) {
         xQueueSendFromISR(ir_evt_queue, &level, NULL);
@@ -1027,11 +1031,13 @@ static void button_task(void* arg)
     uint8_t level;
     for(;;) {
         if(xQueueReceive(button_evt_queue, &level, portMAX_DELAY)) {
-            // uint64_t time = esp_timer_get_time()/1000;
-            // ESP_LOGE(ble_tag, "Button pressed : %d : %llu", level, time);
-            // ESP_LOGI(ble_tag, "------------END----------------");
+            uint64_t time = esp_timer_get_time()/1000;
+            ESP_LOGE(ble_tag, "Button pressed : %d : %llu", level, time);
+            ESP_LOGI(ble_tag, "------------END----------------");
             if (level == 1) {
-                ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
+                if(g_mode[3] == 0){
+                    ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
+                }
                 vTaskDelay(DEBOUNCE_TIME_MS / portTICK_PERIOD_MS); // prevent bouncing in rising edge
                 gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_NEGEDGE);
             }
@@ -1041,7 +1047,9 @@ static void button_task(void* arg)
             else if(level == 2){
                 level = 1;
                 last_level = 1;
-                ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
+                if(g_mode[3] == 0){
+                    ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
+                }
             }
             
         }
