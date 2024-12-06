@@ -198,6 +198,9 @@ static uint8_t manufacturer_data[4] = {0xFF, 0xFF, 0x00, 0x00};
 #define ESP_INTR_FLAG_DEFAULT 0
 #define DEBOUNCE_TIME_MS   10 // 200 ms debounce time
 #define SAMPLES 100
+#define BLE_TIMEOUT 10000 // timeout before sleep
+#define LED_INTENSITY 200
+#define LED_BREAHTING_STEP 5
 static int vibration_threshold = 1;
 static int last_level = 1;
 #define IR_PWM_TMER              LEDC_TIMER_0
@@ -950,18 +953,54 @@ static void ble_disconnect_task(void *pvParameter)
 {
     uint64_t last_connected_time=esp_timer_get_time() / 1000;
     uint64_t current_time; 
+    uint8_t led_intensity = LED_INTENSITY;
+    uint8_t increasing = 0;
+    uint8_t flag = 0;   // incase connected but still breathing
     while(1){
-        if(ble_is_connected == 1){
-            set_all_leds(10, 0, 0);
-            vTaskDelay(500 / portTICK_PERIOD_MS);
-            set_all_leds(0, 0, 0);
-            vTaskDelay(500 / portTICK_PERIOD_MS);
+        if(ble_is_connected == 1 || flag == 0){
+            set_all_leds(led_intensity, 0, 0);
+            if(led_intensity == 0){
+                flag = 1;
+            }
+            else{
+                flag = 0;
+            }
+            if(increasing) {
+                led_intensity+= LED_BREAHTING_STEP;
+                if(led_intensity >= LED_INTENSITY) {
+                    increasing = 0;
+                }
+            } else {
+                led_intensity-= LED_BREAHTING_STEP;
+                if(led_intensity <= 0) {
+                    increasing = 1;
+                }
+            }
+            vTaskDelay(50 / portTICK_PERIOD_MS);
+
             current_time = esp_timer_get_time() / 1000;
-            if(current_time - last_connected_time > 10000){
+            if(current_time - last_connected_time > BLE_TIMEOUT ){
                 sleep_call();
             }
         }else{
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            if(g_mode[3]==4){
+                set_all_leds(led_intensity, led_intensity, led_intensity);
+                if(increasing) {
+                    led_intensity+=LED_BREAHTING_STEP;
+                    if(led_intensity >= LED_INTENSITY) {
+                        increasing = 0;
+                    }
+                } else {
+                    led_intensity-=LED_BREAHTING_STEP;
+                    if(led_intensity <= 0) {
+                        increasing = 1;
+                    }
+                }
+                vTaskDelay(50 / portTICK_PERIOD_MS);
+            }
+            else {
+                vTaskDelay(1000 / portTICK_PERIOD_MS);
+            }
             last_connected_time = esp_timer_get_time() / 1000;
         }
     }
@@ -1031,9 +1070,9 @@ static void button_task(void* arg)
     uint8_t level;
     for(;;) {
         if(xQueueReceive(button_evt_queue, &level, portMAX_DELAY)) {
-            uint64_t time = esp_timer_get_time()/1000;
-            ESP_LOGE(ble_tag, "Button pressed : %d : %llu", level, time);
-            ESP_LOGI(ble_tag, "------------END----------------");
+            // uint64_t time = esp_timer_get_time()/1000;
+            // ESP_LOGE(ble_tag, "Button pressed : %d : %llu", level, time);
+            // ESP_LOGI(ble_tag, "------------END----------------");
             if (level == 1) {
                 if(g_mode[3] == 0){
                     ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
