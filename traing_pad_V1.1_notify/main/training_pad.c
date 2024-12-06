@@ -199,7 +199,7 @@ static uint8_t manufacturer_data[4] = {0xFF, 0xFF, 0x00, 0x00};
 #define DEBOUNCE_TIME_MS   10 // 200 ms debounce time
 #define SAMPLES 100
 static int vibration_threshold = 1;
-
+static int last_level = 1;
 #define IR_PWM_TMER              LEDC_TIMER_0
 #define IR_PWM_MODE               LEDC_LOW_SPEED_MODE
 #define IR_PWM_CHANNEL            LEDC_CHANNEL_0
@@ -212,7 +212,7 @@ static int vibration_threshold = 1;
 #define ALPHA           0.3         // Exponential smoothing factor
 
 #define BATT_DIVIDED_FACTOR 5 //multiply with batt data before send
-\
+
 static esp_adc_cal_characteristics_t *adc_chars;
 static const adc_channel_t percent_bat_channel = ADC_CHANNEL_6;     // GPIO34 if ADC1
 static const adc_bits_width_t width = ADC_WIDTH_BIT_12;
@@ -643,7 +643,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_MTU_EVT, MTU %d", param->mtu.mtu);
             break;
         case ESP_GATTS_CONF_EVT:
-            ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_CONF_EVT, status = %d, attr_handle %d", param->conf.status, param->conf.handle);
+            //ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_CONF_EVT, status = %d, attr_handle %d", param->conf.status, param->conf.handle);
             break;
         case ESP_GATTS_START_EVT:
             ble_is_connected = 1;
@@ -743,7 +743,7 @@ static void ble_send_notify(uint16_t handle, uint8_t *value, size_t len) {
         ESP_LOGE(ble_tag, "Failed to send indication: %s", esp_err_to_name(ret));
     }
     else {
-        ESP_LOGI(ble_tag, "Sent indication - handle: 0x%x, value: %d", handle, *value);
+        //ESP_LOGI(ble_tag, "Sent indication - handle: 0x%x, value: %d", handle, *value);
     }
 }
 // #################### END BLE ####################
@@ -776,7 +776,7 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
                 gpio_set_level(VIBRATION_EN_PIN, 1);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 gpio_set_level(VIBRATION_EN_PIN, 0);
-                printf("Distance: set");
+                //printf("Distance: set\n");
             }
         } else if(g_mode[3] == 3) {
             // Press only mode
@@ -969,11 +969,14 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     uint8_t  level = gpio_get_level(gpio_num);
     if (gpio_num == BUTTON_PIN) {
-        xQueueSendFromISR(button_evt_queue, &level, NULL);        
-        if(level == 0){
-            //gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_NEGEDGE);
+        if(last_level != level){
             gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_DISABLE);
-            vTaskNotifyGiveFromISR(Button_Handle, &xHigherPriorityTaskWoken);
+            last_level = level;
+            xQueueSendFromISR(button_evt_queue, &level, NULL);        
+            if(level == 0){
+                //gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_NEGEDGE);
+                vTaskNotifyGiveFromISR(Button_Handle, &xHigherPriorityTaskWoken);
+            }
         }
     } 
     else if (gpio_num == IR_RECEIVER_PIN) {
@@ -1000,8 +1003,12 @@ static void button_timer_task(void *pvParameter)
     while (1) {
         uint32_t ulNotificationValue = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if(ulNotificationValue > 0){
+            //uint64_t time1 = esp_timer_get_time()/1000;
+            //ESP_LOGE(ble_tag, "Button pressed notify: %llu ", time1);
             vTaskDelay(DEBOUNCE_TIME_MS / portTICK_PERIOD_MS);
-            //gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_POSEDGE);
+            //uint64_t time2 = esp_timer_get_time()/1000;
+            //ESP_LOGE(ble_tag, "Button pressed notify: %llu : %llu",time2, time2-time1);
+            //ESP_LOGI(ble_tag, "------------END----------------");
             level = gpio_get_level(BUTTON_PIN);
             if(level == 1){
                 level = 2;
@@ -1020,31 +1027,23 @@ static void button_task(void* arg)
     uint8_t level;
     for(;;) {
         if(xQueueReceive(button_evt_queue, &level, portMAX_DELAY)) {
-            //uint64_t current_time = esp_timer_get_time() / 1000; // Get time in ms
+            // uint64_t time = esp_timer_get_time()/1000;
+            // ESP_LOGE(ble_tag, "Button pressed : %d : %llu", level, time);
+            // ESP_LOGI(ble_tag, "------------END----------------");
             if (level == 1) {
-                //last_button_time = current_time;
-                gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_NEGEDGE);
                 ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
+                vTaskDelay(DEBOUNCE_TIME_MS / portTICK_PERIOD_MS); // prevent bouncing in rising edge
+                gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_NEGEDGE);
             }
             else if (level == 0) {
-                //last_button_time = current_time;
-                //gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_POSEDGE);
                 ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
             }
             else if(level == 2){
                 level = 1;
-                //last_button_time = current_time;
-                //gpio_set_intr_type(BUTTON_PIN, GPIO_INTR_NEGEDGE);
+                last_level = 1;
                 ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
             }
-            //ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BUTTONS_VAL], sizeof(level), &level);
-            //ble_send_notify(iwing_training_table[IDX_CHAR_BUTTONS_VAL], &level, sizeof(level));
-            // if (ret != ESP_OK) {
-            //     ESP_LOGE(ble_tag, "Failed to set button value : %d", ret);
-            // }
-            // else {
-            //     ESP_LOGI(ble_tag, "Button value set to : %d", level);
-            // }
+            
         }
     }
 }
@@ -1338,7 +1337,7 @@ void app_main(void)
     
     g_ble_data_mutex = xSemaphoreCreateMutex();
 
-    button_evt_queue = xQueueCreate(10, sizeof(uint32_t));
+    button_evt_queue = xQueueCreate(10, sizeof(uint8_t));
     ir_evt_queue = xQueueCreate(10, sizeof(uint32_t));
     ultrasonic_queue = xQueueCreate(10, sizeof(uint32_t));
     ble_data_queue = xQueueCreate(20, sizeof(esp_ble_gatts_cb_param_t *));
