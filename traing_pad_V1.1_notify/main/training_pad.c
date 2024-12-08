@@ -34,7 +34,7 @@
 #include "gatts_table_creat_demo.h"
 #include "esp_gatt_common_api.h"
 
-#define FIRMWARE_VERSION 0x02
+#define FIRMWARE_VERSION 0x03
 
 #define GATTS_TABLE_TAG "GATTS_TABLE_DEMO"
 
@@ -461,7 +461,7 @@ static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
     /* Characteristic Value for MODE */
     [IDX_CHAR_MODE] =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_128, (uint8_t *)&GATTS_CHAR_UUID_MODE, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(char_value), (uint8_t *)&char_value}}, // RW: สถานะ MODE (1 = เปิดใช้งานการ calibrate  , 0 = ปิดการ calibrate)
+      GATTS_DEMO_CHAR_VAL_LEN_MAX, sizeof(g_mode), (uint8_t *)&g_mode}}, // RW: สถานะ MODE (1 = เปิดใช้งานการ calibrate  , 0 = ปิดการ calibrate)
 
     /* Client Characteristic Configuration Descriptor for MODE */
     [IDX_CHAR_MODE_CCCD] =
@@ -791,7 +791,7 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
         memcpy(g_music_data, value, len);
         g_music_data_len = len;
     } else if (handle == iwing_training_table[IDX_CHAR_MODE] && len == 4) {
-        memcpy(g_mode, value, 4);
+        memcpy(&g_mode[1], &value[1], 3); 
         // Mode D handling
         if(g_mode[3] == 0) {
             // Normal mode
@@ -815,6 +815,14 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
             // Press only mode
             // Button handling stays in button_task
             ESP_LOGI(ble_tag, "Press only mode");
+        }
+        esp_err_t ret;
+        ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_MODE], sizeof(g_mode), &g_mode);
+        if (ret != ESP_OK) {
+            ESP_LOGE(ble_tag, "Failed to set mode: %d", ret);
+        }
+        else {
+            ESP_LOGI(ble_tag, "initial mode value set to : %02X", g_mode[0]);
         }
     }
     xSemaphoreGive(g_ble_data_mutex);
@@ -982,9 +990,10 @@ static void ble_disconnect_task(void *pvParameter)
 {
     uint64_t last_connected_time=esp_timer_get_time() / 1000;
     uint64_t current_time; 
-    uint8_t led_intensity = LED_INTENSITY;
-    uint8_t increasing = 0;
+    uint8_t led_intensity = 0;
+    uint8_t increasing = 1;
     uint8_t flag = 0;   // incase connected but still breathing
+    uint8_t flag2 = 0;  // incase connected but still breathing
     while(1){
         if(ble_is_connected == 1 || flag == 0){
             set_all_leds(led_intensity, 0, 0);
@@ -1012,8 +1021,14 @@ static void ble_disconnect_task(void *pvParameter)
                 sleep_call();
             }
         }else{
-            if(g_mode[3]==4){
-                set_all_leds(led_intensity, led_intensity, led_intensity);
+            if(g_mode[3]==4|| flag2 == 0){
+                set_all_leds(0, 0, led_intensity);
+                if(led_intensity == 0){
+                    flag2 = 1;
+                }
+                else{
+                    flag2 = 0;
+                }
                 if(increasing) {
                     led_intensity+=LED_BREAHTING_STEP;
                     if(led_intensity >= LED_INTENSITY) {
@@ -1582,6 +1597,13 @@ void app_main(void)
         case ESP_SLEEP_WAKEUP_UNDEFINED:
         default:
             printf("Not a deep sleep reset\n");
+    }
+    ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_MODE], sizeof(g_mode), &g_mode);
+    if (ret != ESP_OK) {
+        ESP_LOGE(ble_tag, "Failed to set mode: %d", ret);
+    }
+    else {
+        ESP_LOGI(ble_tag, "initial mode value set to : %02X", g_mode[0]);
     }
     rgb_led_init();
     ledc_init();
