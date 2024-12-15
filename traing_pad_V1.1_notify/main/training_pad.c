@@ -19,6 +19,13 @@
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
 
+#include <esp_http_server.h>
+#include <esp_ota_ops.h>
+#include <esp_system.h>
+#include <nvs_flash.h>
+#include <sys/param.h>
+#include <esp_wifi.h>
+
 // #################### BLE ####################
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -34,8 +41,8 @@
 #include "gatts_table_creat_demo.h"
 #include "esp_gatt_common_api.h"
 
-#define FIRMWARE_VERSION 0x03
-
+#define FIRMWARE_VERSION 0x05
+#define WIFI_SSID "Triaing_Pad OTA Update"
 #define GATTS_TABLE_TAG "GATTS_TABLE_DEMO"
 
 #define PROFILE_NUM                 1
@@ -47,8 +54,8 @@
 /* The max length of characteristic value. When the GATT client performs a write or prepare write operation,
 *  the data length must be less than GATTS_DEMO_CHAR_VAL_LEN_MAX.
 */
-#define GATTS_DEMO_CHAR_VAL_LEN_MAX 500
-#define PREPARE_BUF_MAX_SIZE        1024
+#define GATTS_DEMO_CHAR_VAL_LEN_MAX 250
+#define PREPARE_BUF_MAX_SIZE        512
 #define CHAR_DECLARATION_SIZE       (sizeof(uint8_t))
 
 #define ADV_CONFIG_FLAG             (1 << 0)
@@ -202,8 +209,7 @@ static uint8_t manufacturer_data[4] = {0xFF, 0xFF, 0x00, 0x00};
 #define SAMPLES 100
 #define BLE_TIMEOUT 10000 // timeout before sleep
 #define LED_INTENSITY 200
-#define LED_BREAHTING_STEP 5
-static int vibration_threshold = 1;
+#define LED_BREAHTING_STEP 10
 static int last_level = 1;
 
 #define IR_PWM_TMER               LEDC_TIMER_0
@@ -240,7 +246,6 @@ static int current_octave;
 static int default_duration;
 static int tempo;
 static char current_song[MAX_SONG_LENGTH] = {0};  // ตัวแปร global สำหรับเก็บโน้ตเพลง
-static TaskHandle_t mml_task_handle = NULL;       // handle สำหรับจัดการ task
 
 static esp_adc_cal_characteristics_t *adc_chars;
 static const adc_channel_t percent_bat_channel = ADC_CHANNEL_6;     // GPIO34 if ADC1
@@ -262,27 +267,159 @@ static xQueueHandle ir_evt_queue = NULL;
 static xQueueHandle ultrasonic_queue = NULL;
 static xQueueHandle ble_data_queue = NULL;
 static xQueueHandle ble_status_queue = NULL;
-TaskHandle_t Vibration_Handle = NULL;
 TaskHandle_t Button_Handle = NULL;
-
+TaskHandle_t ble_data_task_handle = NULL;
+static TaskHandle_t breathing_led_handle = NULL;
 static SemaphoreHandle_t g_ble_data_mutex = NULL;
 
-static uint64_t last_button_time = 0;
-static int samples[SAMPLES+20];
-static uint8_t g_vib_threshold = 40;  // ค่าเริ่มต้นสำหรับ vibration threshold
 static uint8_t g_led_color[3] = {0, 0, 0};  // RGB color for LED
 static uint8_t g_ir_tx_state = 0;  // สถานะของ IR transmitter
 static uint8_t g_music_data[100] = {0};  // ข้อมูลเพลงใน Music Macro Language
 static size_t g_music_data_len = 0;
 static uint8_t ble_is_connected = 1;
 static uint8_t g_mode[4] = {FIRMWARE_VERSION, 0, 0, 0};  // [A,B,C,D] - version, reserved, calibrate flag, mode
+
+#define VIBRATION_TIMEOUT 300 // vibration timeout time
+#define VIB_THRESHOLD_MULTIPLIER 1.5 // threshold multiplier
+static uint8_t g_vibration_count = 0; // จำนวนค่าที่อ่านได้จาก vibration (จำนวน Negedge)
+static uint8_t g_vibration_reading = 0; // แสดงสถานะการอ่าน vibration 1=กำลังอ่านค่า 
+static uint8_t g_vib_threshold = 1;  // ค่าเริ่มต้นสำหรับ vibration threshold
+TaskHandle_t Vibration_Handle = NULL;
+TaskHandle_t Vibration_Timer_Handle =NULL;
+
 static esp_gatt_if_t gatt_if = ESP_GATT_IF_NONE;
 static uint16_t conn_id = 0;
+
+static bool is_ota_mode = false;
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 
 void set_all_leds(uint8_t red, uint8_t green, uint8_t blue);
 void sleep_call();
 void set_song();
 void stop_song();
+void start_ota_mode();
+typedef struct {
+    uint8_t red;
+    uint8_t green;
+    uint8_t blue;
+} rgb_color_t;
+
+esp_err_t index_get_handler(httpd_req_t *req)
+{
+	httpd_resp_send(req, (const char *) index_html_start, index_html_end - index_html_start);
+	return ESP_OK;
+}
+
+/*
+ * Handle OTA file upload
+ */
+esp_err_t update_post_handler(httpd_req_t *req)
+{
+	char buf[1000];
+	esp_ota_handle_t ota_handle;
+	int remaining = req->content_len;
+
+	const esp_partition_t *ota_partition = esp_ota_get_next_update_partition(NULL);
+	ESP_ERROR_CHECK(esp_ota_begin(ota_partition, OTA_SIZE_UNKNOWN, &ota_handle));
+
+	while (remaining > 0) {
+		int recv_len = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)));
+
+		// Timeout Error: Just retry
+		if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
+			continue;
+
+		// Serious Error: Abort OTA
+		} else if (recv_len <= 0) {
+			httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Protocol Error");
+			return ESP_FAIL;
+		}
+
+		// Successful Upload: Flash firmware chunk
+		if (esp_ota_write(ota_handle, (const void *)buf, recv_len) != ESP_OK) {
+			httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Flash Error");
+			return ESP_FAIL;
+		}
+
+		remaining -= recv_len;
+	}
+
+	// Validate and switch to new OTA image and reboot
+	if (esp_ota_end(ota_handle) != ESP_OK || esp_ota_set_boot_partition(ota_partition) != ESP_OK) {
+			httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Validation / Activation Error");
+			return ESP_FAIL;
+	}
+
+	httpd_resp_sendstr(req, "Firmware update complete, rebooting now!\n");
+
+	vTaskDelay(500 / portTICK_PERIOD_MS);
+	esp_restart();
+
+	return ESP_OK;
+}
+
+/*
+ * HTTP Server
+ */
+httpd_uri_t index_get = {
+	.uri	  = "/",
+	.method   = HTTP_GET,
+	.handler  = index_get_handler,
+	.user_ctx = NULL
+};
+
+httpd_uri_t update_post = {
+	.uri	  = "/update",
+	.method   = HTTP_POST,
+	.handler  = update_post_handler,
+	.user_ctx = NULL
+};
+
+static esp_err_t http_server_init(void)
+{
+	static httpd_handle_t http_server = NULL;
+
+	httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+	if (httpd_start(&http_server, &config) == ESP_OK) {
+		httpd_register_uri_handler(http_server, &index_get);
+		httpd_register_uri_handler(http_server, &update_post);
+	}
+
+	return http_server == NULL ? ESP_FAIL : ESP_OK;
+}
+
+/*
+ * WiFi configuration
+ */
+static esp_err_t softap_init(void)
+{
+	esp_err_t res = ESP_OK;
+
+	res |= esp_netif_init();
+	res |= esp_event_loop_create_default();
+	esp_netif_create_default_wifi_ap();
+
+	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+	res |= esp_wifi_init(&cfg);
+
+	wifi_config_t wifi_config = {
+		.ap = {
+			.ssid = WIFI_SSID,
+			.ssid_len = strlen(WIFI_SSID),
+			.channel = 6,
+			.authmode = WIFI_AUTH_OPEN,
+			.max_connection = 3
+		},
+	};
+
+	res |= esp_wifi_set_mode(WIFI_MODE_AP);
+	res |= esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config);
+	res |= esp_wifi_start();
+
+	return res;
+}
 // #################### BLE ####################
 static const esp_gatts_attr_db_t gatt_db[IWING_TRAINER_IDX_NB] =
 { 
@@ -492,13 +629,13 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     #else
         case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
             adv_config_done &= (~ADV_CONFIG_FLAG);
-            if (adv_config_done == 0){
+            if (adv_config_done == 0 && !is_ota_mode){
                 esp_ble_gap_start_advertising(&adv_params);
             }
             break;
         case ESP_GAP_BLE_SCAN_RSP_DATA_SET_COMPLETE_EVT:
             adv_config_done &= (~SCAN_RSP_CONFIG_FLAG);
-            if (adv_config_done == 0){
+            if (adv_config_done == 0 && !is_ota_mode){
                 esp_ble_gap_start_advertising(&adv_params);
             }
             break;
@@ -627,17 +764,19 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             adv_config_done |= SCAN_RSP_CONFIG_FLAG;
     #else
             //config adv data
-            esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
-            if (ret){
-                ESP_LOGE(GATTS_TABLE_TAG, "config adv data failed, error code = %x", ret);
+            if(!is_ota_mode) {
+                esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
+                if (ret){
+                    ESP_LOGE(GATTS_TABLE_TAG, "config adv data failed, error code = %x", ret);
+                }
+                adv_config_done |= ADV_CONFIG_FLAG;
+                //config scan response data
+                ret = esp_ble_gap_config_adv_data(&scan_rsp_data);
+                if (ret){
+                    ESP_LOGE(GATTS_TABLE_TAG, "config scan response data failed, error code = %x", ret);
+                }
+                adv_config_done |= SCAN_RSP_CONFIG_FLAG;
             }
-            adv_config_done |= ADV_CONFIG_FLAG;
-            //config scan response data
-            ret = esp_ble_gap_config_adv_data(&scan_rsp_data);
-            if (ret){
-                ESP_LOGE(GATTS_TABLE_TAG, "config scan response data failed, error code = %x", ret);
-            }
-            adv_config_done |= SCAN_RSP_CONFIG_FLAG;
     #endif
             esp_err_t create_attr_ret = esp_ble_gatts_create_attr_tab(gatt_db, gatts_if, IWING_TRAINER_IDX_NB, SVC_INST_ID);
             if (create_attr_ret){
@@ -699,7 +838,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         case ESP_GATTS_DISCONNECT_EVT:
             ble_is_connected = 1;
             ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_DISCONNECT_EVT, reason = 0x%x", param->disconnect.reason);
-            esp_ble_gap_start_advertising(&adv_params);
+            if (!is_ota_mode) {  // เช็คก่อนว่ากำลังจะเข้า OTA mode หรือไม่
+                esp_ble_gap_start_advertising(&adv_params);
+            }
             break;
         case ESP_GATTS_CREAT_ATTR_TAB_EVT:
             if (param->add_attr_tab.status != ESP_GATT_OK){
@@ -730,13 +871,15 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     }
 }
 void update_advertising_data(uint16_t battery_voltage) {
-    battery_voltage = battery_voltage * BATT_DIVIDED_FACTOR;
-    manufacturer_data[3] = (battery_voltage >> 8) & 0xFF; 
-    manufacturer_data[2] = battery_voltage & 0xFF;         
-    adv_data.p_manufacturer_data = manufacturer_data;
-    esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
-    if (ret) {
-        ESP_LOGE(GATTS_TABLE_TAG, "config adv data failed, error code = %x", ret);
+    if(!is_ota_mode) {
+        battery_voltage = battery_voltage * BATT_DIVIDED_FACTOR;
+        manufacturer_data[3] = (battery_voltage >> 8) & 0xFF; 
+        manufacturer_data[2] = battery_voltage & 0xFF;         
+        adv_data.p_manufacturer_data = manufacturer_data;
+        esp_err_t ret = esp_ble_gap_config_adv_data(&adv_data);
+        if (ret) {
+            ESP_LOGE(GATTS_TABLE_TAG, "config adv data failed, error code = %x", ret);
+        }
     }
 }
 
@@ -769,6 +912,9 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 
 static void ble_send_notify(uint16_t handle, uint8_t *value, size_t len) {
     //esp_ble_gatts_send_indicate(gatt_if, conn_id, handle, len, value, false);
+    if (is_ota_mode) {
+        return; // ไม่ส่งข้อมูลถ้าอยู่ใน OTA mode
+    }
     esp_err_t ret = esp_ble_gatts_send_indicate(gatt_if, conn_id, handle, len, value, false);
     if (ret != ESP_OK) {
         ESP_LOGE(ble_tag, "Failed to send indication: %s", esp_err_to_name(ret));
@@ -793,6 +939,9 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
     } else if (handle == iwing_training_table[IDX_CHAR_MODE] && len == 4) {
         memcpy(&g_mode[1], &value[1], 3); 
         // Mode D handling
+        if(g_mode[1] == 1) { // ถ้า mode B = 1
+            start_ota_mode();
+        }
         if(g_mode[3] == 0) {
             // Normal mode
             //set_all_leds(0, 0, 0);
@@ -817,7 +966,7 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
             ESP_LOGI(ble_tag, "Press only mode");
         }
         esp_err_t ret;
-        ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_MODE], sizeof(g_mode), &g_mode);
+        ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_MODE], sizeof(g_mode), (const uint8_t *)&g_mode);
         if (ret != ESP_OK) {
             ESP_LOGE(ble_tag, "Failed to set mode: %d", ret);
         }
@@ -830,7 +979,12 @@ static void update_global_data(uint16_t handle, uint8_t *value, size_t len) {
 static void ble_data_task(void *pvParameter) {
     esp_ble_gatts_cb_param_t *param;
     for (;;) {
+        if (is_ota_mode) {
+            vTaskDelete(NULL); // ให้ task ยกเลิกตัวเอง
+            return;
+        }
         if (xQueueReceive(ble_data_queue, &param, portMAX_DELAY)) {
+            if (is_ota_mode) continue;
             if (param->write.is_prep == false) {
                 update_global_data(param->write.handle, param->write.value, param->write.len);
                 
@@ -907,7 +1061,6 @@ float exponential_smoothing(float prev_smooth, float new_value)
 }
 void bat_percent_task(void *pvParameter)
 {
-    esp_err_t ret;
     float smoothed_voltage = 750.0;
     int flag = 0;
     while (1) {
@@ -934,8 +1087,11 @@ void bat_percent_task(void *pvParameter)
             update_advertising_data(data);
         }
         //set_batt_voltage((uint8_t)data, sizeof(data));
-        ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_VOLTAGE_VAL], sizeof(data), &data);
-        ble_send_notify(iwing_training_table[IDX_CHAR_BATT_VOLTAGE_VAL], &data, sizeof(data));
+        uint8_t data_bytes[2];  // อาร์เรย์เพื่อเก็บข้อมูล 2 ไบต์
+        data_bytes[0] = (uint8_t)(data & 0xFF);  // ส่วนต่ำ (ต่ำสุด 8 บิต)
+        data_bytes[1] = (uint8_t)((data >> 8) & 0xFF);  // ส่วนสูง (สูงสุด 8 บิต)
+        esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_BATT_VOLTAGE_VAL], sizeof(data_bytes), data_bytes);
+        ble_send_notify(iwing_training_table[IDX_CHAR_BATT_VOLTAGE_VAL], data_bytes, sizeof(data_bytes));
         //ESP_LOGI(adc_tag, " voltage : %d ,Smoothed Voltage: %.2fmV, data : %d error code : %x",voltage, smoothed_voltage,data,ret);
         //vTaskDelay(pdMS_TO_TICKS(5000));
     }
@@ -985,68 +1141,86 @@ void set_all_leds(uint8_t red, uint8_t green, uint8_t blue)
     }
     ESP_ERROR_CHECK(strip->refresh(strip, 100));
 }
+static void breathing_led_task(void *pvParameter) {
+    rgb_color_t *color = (rgb_color_t *)pvParameter;
+    uint8_t led_intensity = LED_INTENSITY;
+    uint8_t increasing = 0;
+    
+    while(1) {
+        set_all_leds(
+            (color->red * led_intensity) / LED_INTENSITY,
+            (color->green * led_intensity) / LED_INTENSITY,
+            (color->blue * led_intensity) / LED_INTENSITY
+        );
+        
+        if(increasing) {
+            led_intensity += LED_BREAHTING_STEP;
+            if(led_intensity >= LED_INTENSITY) {
+                increasing = 0;
+            }
+        } else {
+            led_intensity -= LED_BREAHTING_STEP;
+            if(led_intensity <= 0) {
+                increasing = 1;
+            }
+        }
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+    }
+}
 
+// ฟังก์ชันสำหรับเริ่ม breathing effect
+void start_breathing_led(uint8_t red, uint8_t green, uint8_t blue) {
+    // ถ้ามี task ทำงานอยู่ให้หยุดก่อน
+    if(breathing_led_handle != NULL) {
+        vTaskDelete(breathing_led_handle);
+        breathing_led_handle = NULL;
+    }
+    
+    // สร้าง structure สำหรับเก็บค่าสี
+    rgb_color_t *color = malloc(sizeof(rgb_color_t));
+    color->red = red;
+    color->green = green;
+    color->blue = blue;
+    
+    // สร้าง task ใหม่
+    xTaskCreate(breathing_led_task, "breathing_led", 2048, color, 5, &breathing_led_handle);
+}
+
+// ฟังก์ชันสำหรับหยุด breathing effect
+void stop_breathing_led() {
+    if(breathing_led_handle != NULL) {
+        vTaskDelete(breathing_led_handle);
+        breathing_led_handle = NULL;
+        set_all_leds(0, 0, 0);
+    }
+}
 static void ble_disconnect_task(void *pvParameter)
 {
     uint64_t last_connected_time=esp_timer_get_time() / 1000;
     uint64_t current_time; 
-    uint8_t led_intensity = 0;
-    uint8_t increasing = 1;
-    uint8_t flag = 0;   // incase connected but still breathing
-    uint8_t flag2 = 0;  // incase connected but still breathing
     while(1){
-        if(ble_is_connected == 1 || flag == 0){
-            set_all_leds(led_intensity, 0, 0);
-            if(led_intensity == 0){
-                flag = 1;
+        if(ble_is_connected == 1){
+            if(breathing_led_handle == NULL) {
+                start_breathing_led(LED_INTENSITY, 0, 0);
             }
-            else{
-                flag = 0;
-            }
-            if(increasing) {
-                led_intensity+= LED_BREAHTING_STEP;
-                if(led_intensity >= LED_INTENSITY) {
-                    increasing = 0;
-                }
-            } else {
-                led_intensity-= LED_BREAHTING_STEP;
-                if(led_intensity <= 0) {
-                    increasing = 1;
-                }
-            }
-            vTaskDelay(50 / portTICK_PERIOD_MS);
-
             current_time = esp_timer_get_time() / 1000;
             if(current_time - last_connected_time > BLE_TIMEOUT ){
+                stop_breathing_led();
                 sleep_call();
             }
         }else{
-            if(g_mode[3]==4|| flag2 == 0){
-                set_all_leds(0, 0, led_intensity);
-                if(led_intensity == 0){
-                    flag2 = 1;
+            if(g_mode[3]==4){
+               if(breathing_led_handle == NULL) {
+                    start_breathing_led(0, 0, LED_INTENSITY);
                 }
-                else{
-                    flag2 = 0;
-                }
-                if(increasing) {
-                    led_intensity+=LED_BREAHTING_STEP;
-                    if(led_intensity >= LED_INTENSITY) {
-                        increasing = 0;
-                    }
-                } else {
-                    led_intensity-=LED_BREAHTING_STEP;
-                    if(led_intensity <= 0) {
-                        increasing = 1;
-                    }
-                }
-                vTaskDelay(50 / portTICK_PERIOD_MS);
             }
             else {
+                stop_breathing_led();
                 vTaskDelay(1000 / portTICK_PERIOD_MS);
             }
             last_connected_time = esp_timer_get_time() / 1000;
         }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 static void IRAM_ATTR gpio_isr_handler(void* arg)
@@ -1075,11 +1249,14 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
                 xQueueSendFromISR(ultrasonic_queue, &level, NULL); 
             }
             else if(g_mode[3] == 0){
-                gpio_set_intr_type(VIBRATION_PIN, GPIO_INTR_DISABLE);
-                vTaskNotifyGiveFromISR(Vibration_Handle, &xHigherPriorityTaskWoken);
-                if (xHigherPriorityTaskWoken) {
-                    portYIELD_FROM_ISR();
-                }
+                g_vibration_reading=1;
+                g_vibration_count=1;
+                vTaskNotifyGiveFromISR(Vibration_Timer_Handle,&xHigherPriorityTaskWoken);
+            }
+        }
+        else if (level == 1) {
+            if(g_mode[3] == 0){
+                g_vibration_count++;
             }
         }
     } 
@@ -1196,33 +1373,29 @@ static void ultrasonic_task(void* arg)
 
     }
 }
+void vibration_timer(void* pvParameters){
+    uint32_t ulNotificationValue;
+    while(1){
+        ulNotificationValue = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (ulNotificationValue > 0) {
+            ESP_LOGI(Vibration_tag, "Start timer");
+            vTaskDelay(VIBRATION_TIMEOUT/ portTICK_PERIOD_MS);
+            ESP_LOGI(Vibration_tag, "Stop timer");
+            xTaskNotifyGive(Vibration_Handle);
+        }
+    }
+}
 void vibration_task(void *pvParameters)
 {
     esp_err_t ret;
     uint8_t on = 255;
     uint8_t off = 0;
-    while (1) {
-        // Wait for notification
-        uint64_t begin_time,end_time ;
-        uint32_t ulNotificationValue = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    uint32_t ulNotificationValue;
+    while(1){
+        ulNotificationValue = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (ulNotificationValue > 0) {
-            uint8_t high = 0;
-            uint8_t low = 0;
-            begin_time = esp_timer_get_time() ; // Get time in ms
-            for (int i = 0; i < SAMPLES; i++) {
-                samples[i] = gpio_get_level(VIBRATION_PIN);
-                if (samples[i] == 1) {
-                    high++;
-                 } else {
-                    low++;
-                }
-                vTaskDelay(1/ portTICK_PERIOD_MS);
-            }
-            end_time= esp_timer_get_time() ; // Get time in ms
-            ESP_LOGI(Vibration_tag, "Time: %llu", (end_time - begin_time));
-            ESP_LOGI(Vibration_tag, "High: %d, Low: %d", high, low);
-            if(low > vibration_threshold){
-                //led_button_hit();
+            gpio_set_intr_type(VIBRATION_PIN, GPIO_INTR_DISABLE);
+            if(g_vibration_count>=g_vib_threshold*VIB_THRESHOLD_MULTIPLIER){
                 ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_VIBRATION_VAL], sizeof(on), &on);
                 ble_send_notify(iwing_training_table[IDX_CHAR_VIBRATION_VAL], &on, sizeof(on));
                 if (ret != ESP_OK) {
@@ -1232,6 +1405,7 @@ void vibration_task(void *pvParameters)
                     ESP_LOGI(ble_tag, "vibration value set to : 255");
                 }
             }
+            ESP_LOGI(Vibration_tag, "count = %u", g_vibration_count);
             vTaskDelay(1000 / portTICK_PERIOD_MS);
             ret=esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_VIBRATION_VAL], sizeof(off), &off);
             ble_send_notify(iwing_training_table[IDX_CHAR_VIBRATION_VAL], &off, sizeof(off));
@@ -1241,10 +1415,13 @@ void vibration_task(void *pvParameters)
             else {
                 ESP_LOGI(ble_tag, "vibration value set to : 0");
             }
+            ESP_LOGI(ble_tag, "threshold = %u", g_vib_threshold);
+            g_vibration_reading=0;
             gpio_set_intr_type(VIBRATION_PIN, GPIO_INTR_NEGEDGE);
         }
+        vTaskDelay(1/ portTICK_PERIOD_MS);
     }
-}
+}  
 void play_note(int frequency, int duration_ms) {
     if (frequency > 0) {
         ESP_ERROR_CHECK(ledc_set_freq(BUZZER_MODE, BUZZER_TIMER, frequency));
@@ -1374,7 +1551,6 @@ void play_mml(const char* mml)
 }
 void song_task(void* pvParameters)
 {
-    const char* song = (const char*) pvParameters;
     while(1) {
        if (strlen(current_song) > 0) {  // เช็คว่ามีเพลงอยู่ใน buffer หรือไม่
             play_mml(current_song);
@@ -1518,12 +1694,41 @@ void led_power_off(void) {
 }
 
 void sleep_call(){
+    if(is_ota_mode) {
+        // ถ้าอยู่ใน OTA mode จะไม่เข้า deep sleep
+        return;
+    }
     led_power_off();
     ESP_ERROR_CHECK(esp_sleep_enable_ext0_wakeup(BUTTON_PIN, 0));
     ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(BUTTON_PIN));
     ESP_ERROR_CHECK(rtc_gpio_pullup_en(BUTTON_PIN));
     esp_deep_sleep_start();
 }
+void start_ota_mode() {
+    is_ota_mode = true;  // set flag ว่าอยู่ใน OTA mode
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    // Stop BLE 
+    esp_bluedroid_disable();
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    esp_bluedroid_deinit();
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    esp_bt_controller_disable();
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    esp_bt_controller_deinit();
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+    // Start OTA
+    ESP_ERROR_CHECK(softap_init());
+    ESP_ERROR_CHECK(http_server_init());
+    
+    printf("OTA Update Mode Started\n");
+    start_breathing_led(0, LED_INTENSITY, 0);
+    while(1) {
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+
+}
+
 
 void app_main(void)
 {
@@ -1598,7 +1803,7 @@ void app_main(void)
         default:
             printf("Not a deep sleep reset\n");
     }
-    ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_MODE], sizeof(g_mode), &g_mode);
+    ret = esp_ble_gatts_set_attr_value(iwing_training_table[IDX_CHAR_MODE], sizeof(g_mode), g_mode);
     if (ret != ESP_OK) {
         ESP_LOGE(ble_tag, "Failed to set mode: %d", ret);
     }
@@ -1626,14 +1831,24 @@ void app_main(void)
     xTaskCreate(button_timer_task, "button_timer_task", 2048, NULL, 10, &Button_Handle);
     xTaskCreate(ir_task, "ir_task", 2048, NULL, 10, NULL);
     xTaskCreate(vibration_task, "vibration_task", 2048, NULL, 16, &Vibration_Handle);
+    xTaskCreate(vibration_timer, "vibration_timer", 2048, NULL, 16, &Vibration_Timer_Handle);
     xTaskCreate(ultrasonic_task, "ultrasonic_task", 2048, NULL, 10, NULL);
 
     xTaskCreate(bat_percent_task, "bat_percent_task", 2048, NULL, 5, NULL);
     xTaskCreate(bat_status_task, "bat_status_task", 2048, NULL, 5, NULL);
-    xTaskCreate(ble_data_task, "ble_data_task", 2048, NULL, 10, NULL);
+    xTaskCreate(ble_data_task, "ble_data_task", 4096, NULL, 10, &ble_data_task_handle);
     xTaskCreate(ble_disconnect_task, "ble_disconnect_task", 2048, NULL, 5, NULL);
     xTaskCreate(song_task, "song_task", 2048, NULL, 5, NULL);
     //xTaskCreate(calibrate_task, "calibrate_task", 2048, NULL, 10, NULL);
+    const esp_partition_t *partition = esp_ota_get_running_partition();
+	printf("Currently running partition: %s\r\n", partition->label);
+
+	esp_ota_img_states_t ota_state;
+	if (esp_ota_get_state_partition(partition, &ota_state) == ESP_OK) {
+		if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+			esp_ota_mark_app_valid_cancel_rollback();
+		}
+	}
     while(1) {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
